@@ -33,4 +33,4 @@ python3 -m http.server 8000
 # then visit http://localhost:8000
 ```
 
-Everything is rendered with the HTML5 canvas — no images, no dependencies.
+The world is rendered with the HTML5 canvas. The Snacks sprite lives at `assets/snacks.png` — drop in a new PNG (transparent background) at the same path to swap his look.

@@ -150,9 +150,17 @@
   let ballTimer = 2.0;
   let cloudTimer = 0;
 
+  // Snacks sprite (loaded async)
+  const snacksImg = new Image();
+  let snacksImgReady = false;
+  snacksImg.onload = () => { snacksImgReady = true; };
+  snacksImg.src = 'assets/snacks.png';
+
+  const SNACKS_H = 76;
+  const SNACKS_ASPECT = 320 / 312; // matches assets/snacks.png
   const snacks = {
     x: 0, y: 0,
-    w: 78, h: 60,
+    w: Math.round(SNACKS_H * SNACKS_ASPECT), h: SNACKS_H,
     vy: 0,
     onGround: true,
     holdTime: 0,
@@ -342,7 +350,7 @@
       if (o.x + o.w < -20) { obstacles.splice(i, 1); continue; }
 
       // Collision with Snacks (use a slightly inset hitbox)
-      const hb = { x: snacks.x + 10, y: snacks.y + 8, w: snacks.w - 20, h: snacks.h - 14 };
+      const hb = { x: snacks.x + snacks.w * 0.14, y: snacks.y + snacks.h * 0.10, w: snacks.w * 0.72, h: snacks.h * 0.85 };
       if (snacks.hurtFlash <= 0 && hit(hb, o)) {
         lives -= 1;
         snacks.hurtFlash = 1.0;
@@ -361,7 +369,7 @@
       b.t = (b.t || 0) + dt;
       if (b.x < -30) { balls.splice(i, 1); continue; }
       // Collision with Snacks mouth
-      const mouth = { x: snacks.x + snacks.w - 18, y: snacks.y + 18, w: 22, h: 22 };
+      const mouth = { x: snacks.x + snacks.w * 0.55, y: snacks.y + snacks.h * 0.18, w: snacks.w * 0.40, h: snacks.h * 0.32 };
       if (hitCircleRect(b, mouth)) {
         balls.splice(i, 1);
         if (lives < maxLives) lives += 1;
@@ -438,112 +446,30 @@
   }
 
   function drawSnacks() {
+    if (!snacksImgReady) return;
     const x = snacks.x, y = snacks.y, w = snacks.w, h = snacks.h;
     const flash = snacks.hurtFlash > 0 && Math.floor(snacks.hurtFlash * 10) % 2 === 0;
 
+    // Shadow (always draw, even mid-jump, scaled by altitude)
     ctx.save();
-    if (flash) ctx.globalAlpha = 0.4;
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    const groundDist = (groundY() - (y + h));
+    const groundDist = groundY() - (y + h);
     const shadowScale = Math.max(0.4, 1 - groundDist / 220);
+    ctx.fillStyle = `rgba(0,0,0,${0.28 * shadowScale})`;
     ctx.beginPath();
     ctx.ellipse(x + w/2, groundY() - 2, (w/2) * shadowScale, 6 * shadowScale, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
 
-    // Tail wag
-    const wag = Math.sin(snacks.runFrame) * 6;
-    ctx.fillStyle = '#8a5a35';
-    ctx.beginPath();
-    ctx.moveTo(x + 4, y + 22);
-    ctx.quadraticCurveTo(x - 14, y + 14 + wag, x - 18, y + 6 + wag);
-    ctx.quadraticCurveTo(x - 6, y + 22, x + 4, y + 30);
-    ctx.fill();
+    ctx.save();
+    if (flash) ctx.globalAlpha = 0.45;
 
-    // Back legs (animated when on ground)
-    const legSwing = snacks.onGround ? Math.sin(snacks.runFrame * 1.4) * 8 : 0;
-    ctx.fillStyle = '#7a4d2a';
-    ctx.fillRect(x + 14, y + h - 18, 10, 18 + Math.max(0, legSwing));
-    ctx.fillRect(x + 28, y + h - 18, 10, 18 + Math.max(0, -legSwing));
-    // Front legs
-    ctx.fillRect(x + 50, y + h - 18, 10, 18 + Math.max(0, -legSwing));
-    ctx.fillRect(x + 62, y + h - 18, 10, 18 + Math.max(0, legSwing));
+    // Run bob + jump tilt
+    const bob  = snacks.onGround ? Math.sin(snacks.runFrame * 1.4) * 1.5 : 0;
+    const tilt = snacks.onGround ? 0 : Math.max(-0.28, Math.min(0.28, snacks.vy / 1600));
 
-    // Body (brown, fluffy)
-    ctx.fillStyle = '#9a6638';
-    roundRect(x + 6, y + 18, w - 12, h - 30, 18);
-    ctx.fill();
-
-    // Belly
-    ctx.fillStyle = '#c08a55';
-    roundRect(x + 14, y + 32, w - 28, 16, 10);
-    ctx.fill();
-
-    // Fluffy chest
-    ctx.fillStyle = '#b07c4a';
-    ctx.beginPath();
-    ctx.arc(x + w - 18, y + 36, 10, 0, Math.PI * 2);
-    ctx.arc(x + w - 10, y + 32, 8, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Head
-    ctx.fillStyle = '#9a6638';
-    ctx.beginPath();
-    ctx.arc(x + w - 16, y + 22, 18, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Snout
-    ctx.fillStyle = '#c89868';
-    roundRect(x + w - 8, y + 22, 14, 12, 6);
-    ctx.fill();
-
-    // Nose
-    ctx.fillStyle = '#1a1208';
-    ctx.beginPath();
-    ctx.arc(x + w + 5, y + 24, 3.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Mouth (slight smile)
-    ctx.strokeStyle = '#1a1208';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + w - 1, y + 30);
-    ctx.quadraticCurveTo(x + w + 3, y + 33, x + w + 6, y + 30);
-    ctx.stroke();
-
-    // Eye
-    ctx.fillStyle = '#1a1208';
-    ctx.beginPath();
-    ctx.arc(x + w - 14, y + 18, 2.6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(x + w - 13, y + 17, 0.9, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Black ears (Cavapoo floppy ears)
-    ctx.fillStyle = '#1c130a';
-    // back ear
-    ctx.beginPath();
-    ctx.moveTo(x + w - 24, y + 8);
-    ctx.quadraticCurveTo(x + w - 36, y + 26, x + w - 26, y + 34);
-    ctx.quadraticCurveTo(x + w - 18, y + 22, x + w - 16, y + 10);
-    ctx.fill();
-    // front ear
-    ctx.beginPath();
-    ctx.moveTo(x + w - 8, y + 8);
-    ctx.quadraticCurveTo(x + w + 4, y + 24, x + w - 2, y + 32);
-    ctx.quadraticCurveTo(x + w - 6, y + 22, x + w - 8, y + 10);
-    ctx.fill();
-
-    // Curly hair tuft
-    ctx.fillStyle = '#7a4d2a';
-    ctx.beginPath();
-    ctx.arc(x + w - 18, y + 8, 4, 0, Math.PI * 2);
-    ctx.arc(x + w - 14, y + 5, 3.5, 0, Math.PI * 2);
-    ctx.arc(x + w - 10, y + 8, 3.5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.translate(x + w/2, y + h/2 + bob);
+    ctx.rotate(tilt);
+    ctx.drawImage(snacksImg, -w/2, -h/2, w, h);
 
     ctx.restore();
   }
