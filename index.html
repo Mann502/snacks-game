@@ -785,7 +785,43 @@
 
     ctx.translate(x + w/2, y + h/2 + bob);
     ctx.rotate(tilt);
-    ctx.drawImage(snacksImg, -w/2, -h/2, w, h);
+
+    // Slice the sprite to animate the legs:
+    //   - top 65% (+overlap) is the body  — never moves
+    //   - bottom 35% is split left/right  — alternating vertical "lift"
+    // Drawn in order legs → body, so the body covers the lifted-leg seam.
+    const sw = snacksImg.naturalWidth;
+    const sh = snacksImg.naturalHeight;
+    const split = 0.65;      // body/legs source split (0..1)
+    const overlap = 0.03;    // body extends a hair into legs to hide the seam
+    const dx = -w / 2;
+    const dy = -h / 2;
+
+    // Leg motion: alternating lift while running, tuck when ascending in a jump
+    const phase = snacks.runFrame * 1.4;
+    const liftAmp = h * 0.09;
+    const tuck    = snacks.onGround ? 0 : Math.max(0, Math.min(h * 0.10, -snacks.vy / 80));
+    const liftL = snacks.onGround ? Math.max(0, Math.sin(phase))             * liftAmp : tuck;
+    const liftR = snacks.onGround ? Math.max(0, Math.sin(phase + Math.PI))   * liftAmp : tuck;
+
+    // Back legs (left half of the bottom portion)
+    ctx.drawImage(
+      snacksImg,
+      0,            sh * split,        sw * 0.5,  sh * (1 - split),
+      dx,           dy + h * split - liftL,  w * 0.5,   h * (1 - split)
+    );
+    // Front legs (right half)
+    ctx.drawImage(
+      snacksImg,
+      sw * 0.5,     sh * split,        sw * 0.5,  sh * (1 - split),
+      dx + w * 0.5, dy + h * split - liftR,  w * 0.5,   h * (1 - split)
+    );
+    // Body — drawn last so it covers the lifted-leg tops cleanly
+    ctx.drawImage(
+      snacksImg,
+      0, 0,                    sw, sh * (split + overlap),
+      dx, dy,                  w,  h  * (split + overlap)
+    );
 
     ctx.restore();
   }
