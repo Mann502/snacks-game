@@ -88,6 +88,49 @@
   }
   #overlay button:active { transform: translateY(2px); box-shadow: 0 4px 0 #b48a14; }
   .small { font-size: 14px; opacity: .8; }
+  #mute {
+    pointer-events: auto;
+    background: rgba(0,0,0,0.35);
+    color: #fff;
+    border: 0;
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    align-self: center;
+  }
+  #mute:active { transform: translateY(1px); }
+  #bossBanner {
+    position: absolute;
+    top: 26%;
+    left: 50%;
+    transform: translateX(-50%) scale(0.85);
+    background: rgba(220, 30, 60, 0.94);
+    color: #fff;
+    font-weight: 900;
+    font-size: clamp(20px, 5vw, 36px);
+    padding: 10px 22px;
+    border-radius: 10px;
+    letter-spacing: 2px;
+    text-shadow: 0 2px 0 rgba(0,0,0,0.45);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .2s ease-out, transform .2s ease-out;
+    white-space: nowrap;
+  }
+  #bossBanner.show {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+    animation: bossPulse .35s ease-in-out infinite alternate;
+  }
+  @keyframes bossPulse {
+    from { transform: translateX(-50%) scale(1); }
+    to   { transform: translateX(-50%) scale(1.06); }
+  }
+  #best { font-weight: 700; }
 </style>
 </head>
 <body>
@@ -95,12 +138,15 @@
     <canvas id="game"></canvas>
     <div id="hud">
       <div id="score">Score: 0</div>
+      <button id="mute" type="button" aria-label="Toggle sound">Sound on</button>
       <div id="lives" aria-label="lives"></div>
     </div>
+    <div id="bossBanner">BIRDS INCOMING!</div>
     <div id="overlay">
       <h1>Snacks and his Big Adventure</h1>
       <p>Help Snacks the Cavapoo dodge bins, trees, and birds.</p>
       <p>Catch tennis balls for an extra life!</p>
+      <p id="bestLine" class="small"></p>
       <p class="small">Tap / Click / Space to jump &nbsp;·&nbsp; Hold for higher jump</p>
       <button id="startBtn">Start Run</button>
     </div>
@@ -114,6 +160,9 @@
   const startBtn = document.getElementById('startBtn');
   const scoreEl = document.getElementById('score');
   const livesEl = document.getElementById('lives');
+  const muteBtn = document.getElementById('mute');
+  const bossBannerEl = document.getElementById('bossBanner');
+  const bestLineEl = document.getElementById('bestLine');
 
   let W = 0, H = 0, DPR = 1;
   function resize() {
@@ -138,6 +187,32 @@
   const BASE_SPEED = 360;      // px/s
   const SPEED_GAIN = 6;        // px/s per second
 
+  // Stage palettes (background, ground, accents). Snacks runs through these in order.
+  const STAGES = [
+    { name: 'park',  skyTop: '#9be7ff', skyBottom: '#fdf3c8', hill: '#7ec06d',
+      grassTop: '#7cc14a', grassMid: '#5aa033', grassBottom: '#3a6a1f',
+      dash: 'rgba(0,0,0,0.18)', sun: 'rgba(255,230,140,0.9)',
+      bin: '#3a3a3f', binLid: '#1f1f23', binRib: 'rgba(255,255,255,0.15)',
+      treeTrunk: '#6b3f1d', treeLeaf: '#2f7a30',
+      birdBody: '#2f3a55', birdWing: '#445575', birdBeak: '#ffb627',
+      stars: false, isNight: false },
+    { name: 'beach', skyTop: '#fbe1a3', skyBottom: '#ffd0a0', hill: '#3aa5c5',
+      grassTop: '#f1d99c', grassMid: '#dfbe7a', grassBottom: '#b48a4f',
+      dash: 'rgba(255,255,255,0.45)', sun: 'rgba(255,200,120,0.95)',
+      bin: '#e44b4b', binLid: '#ffffff', binRib: 'rgba(255,255,255,0.0)',
+      treeTrunk: '#7a4a26', treeLeaf: '#2f9b3a',
+      birdBody: '#f5f5f5', birdWing: '#9a9a9a', birdBeak: '#ffb627',
+      stars: false, isNight: false },
+    { name: 'night', skyTop: '#0a1230', skyBottom: '#39306a', hill: '#1a1c40',
+      grassTop: '#3a3a4a', grassMid: '#252532', grassBottom: '#15151c',
+      dash: 'rgba(255,220,120,0.6)', sun: 'rgba(220,220,255,0.95)',
+      bin: '#ff8a1f', binLid: '#ff5a1f', binRib: 'rgba(255,255,255,0.6)',
+      treeTrunk: '#3d3d44', treeLeaf: '#fff2b0',
+      birdBody: '#0c0c14', birdWing: '#1a1a22', birdBeak: '#a23b3b',
+      stars: true, isNight: true },
+  ];
+  const STAGE_LENGTH = 500; // metres per stage
+
   // Game state
   let running = false;
   let lastTime = 0;
@@ -149,6 +224,23 @@
   let spawnTimer = 0;
   let ballTimer = 2.0;
   let cloudTimer = 0;
+
+  // Stage / boss state
+  let currentStage = 0;
+  let prevStage = 0;
+  let stageBlend = 1;          // 1 = fully on currentStage, 0 = fully on prevStage
+  let bossActive = false;
+  let bossPhase = '';          // 'alert' | 'wave' | 'cooldown'
+  let bossT = 0;
+  let bossSpawnQueue = [];     // upcoming boss-bird spawns: [{at, y}]
+  let starField = [];          // pre-generated stars for night stage
+
+  // Polish state
+  let bestScore = +(localStorage.getItem('snacks.best') || 0);
+  let muted = localStorage.getItem('snacks.muted') === '1';
+  let shakeAmp = 0;
+  let audioCtx = null;
+  let masterGain = null;
 
   // Snacks sprite (loaded async)
   const snacksImg = new Image();
@@ -176,7 +268,137 @@
 
   function groundY() { return H * GROUND_RATIO; }
 
+  // ---- Audio (lazy WebAudio synth, no asset files) ----
+  function ensureAudio() {
+    if (audioCtx) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = new AC();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = muted ? 0 : 0.6;
+    masterGain.connect(audioCtx.destination);
+  }
+  function blip(type, freqStart, freqEnd, dur, peak = 0.3) {
+    if (!audioCtx || muted) return;
+    const t0 = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqStart, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(40, freqEnd), t0 + dur);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+  function noiseBurst(dur, peak = 0.4, cutoff = 1200) {
+    if (!audioCtx || muted) return;
+    const t0 = audioCtx.currentTime;
+    const buf = audioCtx.createBuffer(1, Math.ceil(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = cutoff;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(peak, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(filt).connect(gain).connect(masterGain);
+    src.start(t0);
+  }
+  function playJump()       { blip('sine',     320, 640, 0.10, 0.22); }
+  function playCatch()      {
+    blip('triangle', 523, 523, 0.07, 0.25);
+    setTimeout(() => blip('triangle', 659, 659, 0.07, 0.22), 60);
+    setTimeout(() => blip('triangle', 784, 784, 0.10, 0.22), 120);
+  }
+  function playHit()        { noiseBurst(0.22, 0.45, 800); blip('sawtooth', 180, 60, 0.18, 0.18); }
+  function playGameOver()   {
+    blip('sawtooth', 440, 440, 0.18, 0.25);
+    setTimeout(() => blip('sawtooth', 370, 370, 0.22, 0.22), 180);
+    setTimeout(() => blip('sawtooth', 277, 200, 0.45, 0.22), 380);
+  }
+  function playBossAlert()  {
+    blip('square', 660, 660, 0.12, 0.22);
+    setTimeout(() => blip('square', 880, 880, 0.12, 0.22), 140);
+    setTimeout(() => blip('square', 660, 660, 0.12, 0.22), 280);
+  }
+
+  // ---- Haptics ----
+  function vibe(pattern) {
+    try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) {}
+  }
+
+  // ---- Screen shake ----
+  function addShake(amp) { if (amp > shakeAmp) shakeAmp = amp; }
+
+  // ---- Mute toggle ----
+  function setMuted(v) {
+    muted = v;
+    localStorage.setItem('snacks.muted', v ? '1' : '0');
+    if (masterGain) masterGain.gain.value = v ? 0 : 0.6;
+    muteBtn.textContent = v ? 'Sound off' : 'Sound on';
+  }
+  muteBtn.textContent = muted ? 'Sound off' : 'Sound on';
+  muteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    ensureAudio();
+    setMuted(!muted);
+  });
+
+  // ---- Color blend for stage transitions (RGB or rgba()) ----
+  function parseColor(c) {
+    if (c.startsWith('#')) {
+      const h = c.slice(1);
+      const n = parseInt(h.length === 3 ? h.split('').map(x => x + x).join('') : h, 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 1];
+    }
+    const m = c.match(/rgba?\(([^)]+)\)/);
+    if (m) {
+      const parts = m[1].split(',').map(s => parseFloat(s.trim()));
+      return [parts[0] | 0, parts[1] | 0, parts[2] | 0, parts.length > 3 ? parts[3] : 1];
+    }
+    return [255, 255, 255, 1];
+  }
+  function lerpColor(a, b, t) {
+    const ca = parseColor(a), cb = parseColor(b);
+    const r = Math.round(ca[0] + (cb[0] - ca[0]) * t);
+    const g = Math.round(ca[1] + (cb[1] - ca[1]) * t);
+    const bl = Math.round(ca[2] + (cb[2] - ca[2]) * t);
+    const al = ca[3] + (cb[3] - ca[3]) * t;
+    return `rgba(${r},${g},${bl},${al})`;
+  }
+  // Convenience: pick palette field with crossfade
+  function pal(field) {
+    const cur = STAGES[currentStage][field];
+    if (stageBlend >= 1 || prevStage === currentStage) return cur;
+    return lerpColor(STAGES[prevStage][field], cur, stageBlend);
+  }
+
+  // Pre-generate a star field (used in night stage)
+  function regenStars() {
+    starField = [];
+    for (let i = 0; i < 60; i++) {
+      starField.push({
+        x: Math.random() * W,
+        y: Math.random() * (H * 0.55),
+        r: Math.random() * 1.4 + 0.3,
+        a: 0.4 + Math.random() * 0.6,
+      });
+    }
+  }
+  regenStars();
+  window.addEventListener('resize', regenStars);
+
   function reset() {
+    ensureAudio();
     running = true;
     lastTime = performance.now();
     speed = BASE_SPEED;
@@ -198,15 +420,35 @@
     snacks.vy = 0;
     snacks.onGround = true;
     snacks.hurtFlash = 0;
+    currentStage = 0;
+    prevStage = 0;
+    stageBlend = 1;
+    bossActive = false;
+    bossPhase = '';
+    bossSpawnQueue.length = 0;
+    bossBannerEl.classList.remove('show');
+    shakeAmp = 0;
     overlay.classList.add('hidden');
     updateHUD();
   }
 
   function gameOver() {
     running = false;
-    overlay.querySelector('h1').textContent = 'Snacks needs a nap';
-    overlay.querySelector('p').textContent = `Final score: ${score}`;
-    overlay.querySelectorAll('p')[1].textContent = `Distance: ${Math.floor(distance)} m`;
+    const prevBest = bestScore;
+    const newBest = score > bestScore;
+    if (newBest) {
+      bestScore = score;
+      try { localStorage.setItem('snacks.best', String(bestScore)); } catch (_) {}
+    }
+    playGameOver();
+    vibe([120, 60, 120]);
+    addShake(14);
+    bossBannerEl.classList.remove('show');
+    overlay.querySelector('h1').textContent = newBest ? 'New best!' : 'Snacks needs a nap';
+    const ps = overlay.querySelectorAll('p');
+    ps[0].textContent = `Final score: ${score}`;
+    ps[1].textContent = `Distance: ${Math.floor(distance)} m  ·  Stage reached: ${STAGES[currentStage].name}`;
+    ps[2].textContent = newBest ? `Previous best: ${prevBest}` : `Best: ${bestScore}`;
     startBtn.textContent = 'Run Again';
     overlay.classList.remove('hidden');
   }
@@ -224,12 +466,14 @@
 
   // Input
   function jumpStart() {
+    ensureAudio();
     if (!running) return;
     if (snacks.onGround) {
       snacks.vy = JUMP_VEL;
       snacks.onGround = false;
       snacks.holding = true;
       snacks.holdTime = 0;
+      playJump();
     }
   }
   function jumpEnd() { snacks.holding = false; }
@@ -251,22 +495,26 @@
   });
   canvas.addEventListener('pointerup', jumpEnd);
   canvas.addEventListener('pointercancel', jumpEnd);
-  startBtn.addEventListener('click', reset);
+  startBtn.addEventListener('click', () => { ensureAudio(); reset(); });
 
   // Spawning
   function spawnObstacle() {
     const types = ['bin', 'tree', 'tree', 'bird']; // weight trees a bit
     const type = types[(Math.random() * types.length) | 0];
     const gy = groundY();
+    const stage = currentStage;
     if (type === 'bin') {
-      obstacles.push({ type, x: W + 40, y: gy - 52, w: 42, h: 52 });
+      obstacles.push({ type, x: W + 40, y: gy - 52, w: 42, h: 52, stage });
     } else if (type === 'tree') {
       const h = 70 + Math.random() * 40;
-      obstacles.push({ type, x: W + 40, y: gy - h, w: 50, h });
+      obstacles.push({ type, x: W + 40, y: gy - h, w: 50, h, stage });
     } else if (type === 'bird') {
       const altitude = gy - 120 - Math.random() * 90;
-      obstacles.push({ type, x: W + 40, y: altitude, w: 54, h: 32, flap: 0 });
+      obstacles.push({ type, x: W + 40, y: altitude, w: 54, h: 32, flap: 0, stage });
     }
+  }
+  function spawnBossBird(y, stage) {
+    obstacles.push({ type: 'bird', x: W + 40, y, w: 54, h: 32, flap: Math.random() * 6, stage, boss: true });
   }
   function spawnBall() {
     const gy = groundY();
@@ -321,12 +569,74 @@
     snacks.runFrame += dt * 12;
     if (snacks.hurtFlash > 0) snacks.hurtFlash -= dt;
 
-    // Spawning
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) {
-      spawnObstacle();
-      const minGap = Math.max(0.65, 1.4 - (speed - BASE_SPEED) / 600);
-      spawnTimer = minGap + Math.random() * 0.9;
+    // Stage progression — trigger boss wave at each threshold crossing
+    const targetStage = Math.floor(distance / STAGE_LENGTH) % STAGES.length;
+    if (targetStage !== currentStage && !bossActive) {
+      bossActive = true;
+      bossPhase = 'alert';
+      bossT = 1.1;                    // alert duration (seconds)
+      bossSpawnQueue.length = 0;
+      // 5 birds in a weaving pattern at varied altitudes — staggered so they
+      // don't spawn on top of each other. `at` is seconds-after-wave-starts.
+      const baseY = gy - 140;
+      const queueStage = targetStage; // birds carry the *new* stage's skin
+      const slots = [
+        { at: 0.05, y: baseY },
+        { at: 0.55, y: baseY - 60 },
+        { at: 1.05, y: baseY },
+        { at: 1.55, y: baseY - 60 },
+        { at: 2.00, y: baseY - 30 },
+      ];
+      for (const s of slots) bossSpawnQueue.push({ at: s.at, y: s.y, stage: queueStage });
+      bossBannerEl.classList.add('show');
+      playBossAlert();
+      vibe([40, 40, 40]);
+      addShake(10);
+    }
+    if (bossActive) {
+      bossT -= dt;
+      if (bossPhase === 'alert' && bossT <= 0) {
+        bossPhase = 'wave';
+        bossT = 8.0;                  // generous wave window — ends early when birds clear
+        prevStage = currentStage;
+        currentStage = targetStage;
+        stageBlend = 0;
+        bossBannerEl.classList.remove('show');
+      }
+      if (bossPhase === 'wave') {
+        for (let i = bossSpawnQueue.length - 1; i >= 0; i--) {
+          const q = bossSpawnQueue[i];
+          q.at -= dt;
+          if (q.at <= 0) {
+            spawnBossBird(q.y, q.stage);
+            bossSpawnQueue.splice(i, 1);
+          }
+        }
+        if (bossSpawnQueue.length === 0 && !obstacles.some(o => o.boss && o.x > -40)) {
+          bossActive = false;
+          bossPhase = '';
+        } else if (bossT <= 0) {
+          bossActive = false;
+          bossPhase = '';
+          bossSpawnQueue.length = 0;
+        }
+      }
+    }
+
+    // Stage crossfade always advances toward 1
+    if (stageBlend < 1) stageBlend = Math.min(1, stageBlend + dt / 0.6);
+
+    // Spawning (suppressed during boss wave)
+    if (!bossActive) {
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnObstacle();
+        const minGap = Math.max(0.65, 1.4 - (speed - BASE_SPEED) / 600);
+        spawnTimer = minGap + Math.random() * 0.9;
+      }
+    } else {
+      // small grace period when wave ends before next normal obstacle
+      spawnTimer = Math.max(spawnTimer, 0.6);
     }
     ballTimer -= dt;
     if (ballTimer <= 0) {
@@ -334,10 +644,14 @@
       ballTimer = 4 + Math.random() * 4;
     }
     cloudTimer -= dt;
-    if (cloudTimer <= 0) {
+    if (cloudTimer <= 0 && !STAGES[currentStage].isNight) {
       clouds.push({ x: W + 80, y: 40 + Math.random() * (H * 0.35), s: 0.4 + Math.random() * 0.6 });
       cloudTimer = 1.5 + Math.random() * 2.5;
     }
+
+    // Decay screen shake
+    if (shakeAmp > 0.01) shakeAmp *= Math.pow(0.001, dt); // ~halves every 100ms
+    else shakeAmp = 0;
 
     // Move obstacles
     for (let i = obstacles.length - 1; i >= 0; i--) {
@@ -355,6 +669,9 @@
         lives -= 1;
         snacks.hurtFlash = 1.0;
         addParticles(snacks.x + snacks.w/2, snacks.y + snacks.h/2, '#ff5566', 14);
+        playHit();
+        vibe(70);
+        addShake(8);
         // small pushback
         speed = Math.max(BASE_SPEED, speed * 0.85);
         updateHUD();
@@ -376,6 +693,8 @@
         score += 25;
         distance += 25;
         addParticles(b.x, b.y, '#d8ff5a', 16);
+        playCatch();
+        vibe(25);
         updateHUD();
       }
     }
@@ -426,18 +745,15 @@
 
   function drawGround() {
     const gy = groundY();
-    // grass strip
     const grad = ctx.createLinearGradient(0, gy, 0, H);
-    grad.addColorStop(0, '#7cc14a');
-    grad.addColorStop(0.15, '#5aa033');
-    grad.addColorStop(1, '#3a6a1f');
+    grad.addColorStop(0,    pal('grassTop'));
+    grad.addColorStop(0.15, pal('grassMid'));
+    grad.addColorStop(1,    pal('grassBottom'));
     ctx.fillStyle = grad;
     ctx.fillRect(0, gy, W, H - gy);
-    // top edge highlight
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
     ctx.fillRect(0, gy, W, 2);
-    // moving dashes
-    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillStyle = pal('dash');
     const dashSpacing = 36;
     const offset = (distance * 1.0) % dashSpacing;
     for (let x = -offset; x < W; x += dashSpacing) {
@@ -476,12 +792,56 @@
 
   function drawBin(o) {
     const x = o.x, y = o.y, w = o.w, h = o.h;
-    // body
-    ctx.fillStyle = '#3a3a3f';
+    const s = STAGES[o.stage || 0];
+    if (s.name === 'beach') {
+      // beach umbrella: pole + striped canopy
+      ctx.fillStyle = '#7a4a26';
+      ctx.fillRect(x + w/2 - 2, y + 14, 4, h - 14);
+      // canopy - red/white stripes
+      ctx.fillStyle = s.bin;
+      ctx.beginPath();
+      ctx.moveTo(x - 4, y + 18);
+      ctx.quadraticCurveTo(x + w/2, y - 12, x + w + 4, y + 18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = s.binLid;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x - 4 + (i * 2 + 1) * (w + 8) / 6, y + 18);
+        ctx.quadraticCurveTo(x + w/2, y + 4 - i * 2, x - 4 + (i * 2 + 2) * (w + 8) / 6, y + 18);
+        ctx.fill();
+      }
+      // tip
+      ctx.fillStyle = s.bin;
+      ctx.beginPath();
+      ctx.arc(x + w/2, y + 4, 3, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    if (s.name === 'night') {
+      // traffic cone with reflective stripe
+      ctx.fillStyle = s.bin;
+      ctx.beginPath();
+      ctx.moveTo(x + w/2 - 2, y);
+      ctx.lineTo(x + w/2 + 2, y);
+      ctx.lineTo(x + w - 4, y + h - 6);
+      ctx.lineTo(x + 4, y + h - 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = s.binRib;
+      ctx.fillRect(x + 8, y + h * 0.35, w - 16, 4);
+      ctx.fillRect(x + 6, y + h * 0.55, w - 12, 4);
+      // base
+      ctx.fillStyle = s.binLid;
+      roundRect(x, y + h - 6, w, 6, 2);
+      ctx.fill();
+      return;
+    }
+    // park (default)
+    ctx.fillStyle = s.bin;
     roundRect(x + 2, y + 8, w - 4, h - 8, 4);
     ctx.fill();
-    // ribs
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.strokeStyle = s.binRib;
     ctx.lineWidth = 1;
     for (let i = 0; i < 3; i++) {
       ctx.beginPath();
@@ -489,30 +849,80 @@
       ctx.lineTo(x + w - 4, y + 18 + i * 10);
       ctx.stroke();
     }
-    // lid
-    ctx.fillStyle = '#1f1f23';
+    ctx.fillStyle = s.binLid;
     roundRect(x, y, w, 10, 3);
     ctx.fill();
-    // handle
-    ctx.fillStyle = '#1f1f23';
     roundRect(x + w/2 - 6, y - 4, 12, 5, 2);
     ctx.fill();
   }
 
   function drawTree(o) {
     const x = o.x, y = o.y, w = o.w, h = o.h;
-    // trunk
-    ctx.fillStyle = '#6b3f1d';
+    const s = STAGES[o.stage || 0];
+    if (s.name === 'beach') {
+      // palm: curved trunk + 4 fronds
+      ctx.strokeStyle = s.treeTrunk;
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x + w/2, y + h);
+      ctx.quadraticCurveTo(x + w/2 - 6, y + h * 0.55, x + w/2 + 4, y + 18);
+      ctx.stroke();
+      // fronds
+      ctx.fillStyle = s.treeLeaf;
+      const cx = x + w/2 + 4, cy = y + 18;
+      const frondAngles = [-1.2, -0.5, 0.4, 1.3];
+      for (const a of frondAngles) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(18, -6, 30, 2);
+        ctx.quadraticCurveTo(18, 4, 0, 0);
+        ctx.fill();
+        ctx.restore();
+      }
+      // coconut
+      ctx.fillStyle = '#5a3a1c';
+      ctx.beginPath();
+      ctx.arc(cx + 2, cy + 8, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    if (s.name === 'night') {
+      // lamppost with glowing lamp + halo
+      ctx.fillStyle = s.treeTrunk;
+      ctx.fillRect(x + w/2 - 3, y + 14, 6, h - 14);
+      // base
+      ctx.fillRect(x + w/2 - 8, y + h - 6, 16, 6);
+      // arm
+      ctx.fillRect(x + w/2 - 3, y + 14, 14, 4);
+      // lamp halo
+      const grd = ctx.createRadialGradient(x + w/2 + 14, y + 18, 2, x + w/2 + 14, y + 18, 22);
+      grd.addColorStop(0, 'rgba(255,242,176,0.85)');
+      grd.addColorStop(1, 'rgba(255,242,176,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(x + w/2 + 14, y + 18, 22, 0, Math.PI * 2);
+      ctx.fill();
+      // lamp bulb
+      ctx.fillStyle = s.treeLeaf;
+      ctx.beginPath();
+      ctx.arc(x + w/2 + 14, y + 18, 5, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    // park (default)
+    ctx.fillStyle = s.treeTrunk;
     ctx.fillRect(x + w/2 - 5, y + h * 0.55, 10, h * 0.45);
-    // foliage
-    ctx.fillStyle = '#2f7a30';
+    ctx.fillStyle = s.treeLeaf;
     ctx.beginPath();
     ctx.arc(x + w/2, y + 18, 18, 0, Math.PI * 2);
     ctx.arc(x + w/2 - 12, y + 26, 14, 0, Math.PI * 2);
     ctx.arc(x + w/2 + 12, y + 26, 14, 0, Math.PI * 2);
     ctx.arc(x + w/2, y + 32, 16, 0, Math.PI * 2);
     ctx.fill();
-    // highlight
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.beginPath();
     ctx.arc(x + w/2 - 6, y + 14, 5, 0, Math.PI * 2);
@@ -521,38 +931,72 @@
 
   function drawBird(o) {
     const x = o.x, y = o.y, w = o.w, h = o.h;
+    const s = STAGES[o.stage || 0];
     const flap = Math.sin(o.flap || 0);
-    // body
-    ctx.fillStyle = '#2f3a55';
+    if (s.name === 'night') {
+      // bat: dark body + sharp pointed wings
+      ctx.fillStyle = s.birdBody;
+      ctx.beginPath();
+      ctx.ellipse(x + w/2, y + h/2, w/2 - 6, h/2 - 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // head
+      ctx.beginPath();
+      ctx.arc(x + 10, y + h/2 - 2, 7, 0, Math.PI * 2);
+      ctx.fill();
+      // pointed ears
+      ctx.beginPath();
+      ctx.moveTo(x + 6, y + h/2 - 7);
+      ctx.lineTo(x + 9, y + h/2 - 14);
+      ctx.lineTo(x + 12, y + h/2 - 7);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + 12, y + h/2 - 7);
+      ctx.lineTo(x + 16, y + h/2 - 12);
+      ctx.lineTo(x + 18, y + h/2 - 6);
+      ctx.fill();
+      // sharp wing
+      ctx.fillStyle = s.birdWing;
+      ctx.beginPath();
+      const wingTipY = y + h/2 + flap * -16;
+      ctx.moveTo(x + w/2 - 4, y + h/2);
+      ctx.lineTo(x + w/2 + 8, wingTipY);
+      ctx.lineTo(x + w - 2, y + h/2 + 2);
+      ctx.lineTo(x + w/2 + 4, y + h/2 + 4);
+      ctx.closePath();
+      ctx.fill();
+      // glowing red eye
+      ctx.fillStyle = s.birdBeak;
+      ctx.beginPath();
+      ctx.arc(x + 9, y + h/2 - 3, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    // park / beach (sparrow / seagull) — same shape, palette swap
+    ctx.fillStyle = s.birdBody;
     ctx.beginPath();
     ctx.ellipse(x + w/2, y + h/2, w/2 - 4, h/2 - 4, 0, 0, Math.PI * 2);
     ctx.fill();
-    // head
     ctx.beginPath();
     ctx.arc(x + 10, y + h/2 - 2, 8, 0, Math.PI * 2);
     ctx.fill();
-    // beak
-    ctx.fillStyle = '#ffb627';
+    ctx.fillStyle = s.birdBeak;
     ctx.beginPath();
     ctx.moveTo(x + 2, y + h/2);
     ctx.lineTo(x - 6, y + h/2 + 2);
     ctx.lineTo(x + 2, y + h/2 + 5);
     ctx.fill();
-    // eye
     ctx.fillStyle = '#fff';
     ctx.beginPath(); ctx.arc(x + 9, y + h/2 - 4, 2, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = '#000';
     ctx.beginPath(); ctx.arc(x + 9, y + h/2 - 4, 1, 0, Math.PI*2); ctx.fill();
-    // wings (flap up/down)
-    ctx.fillStyle = '#445575';
+    ctx.fillStyle = s.birdWing;
     ctx.beginPath();
     const wingY = y + h/2 + flap * -10;
     ctx.moveTo(x + w/2 - 4, y + h/2);
     ctx.quadraticCurveTo(x + w/2 + 6, wingY, x + w - 6, y + h/2 + 2);
     ctx.quadraticCurveTo(x + w/2 + 6, y + h/2 + 6, x + w/2 - 4, y + h/2);
     ctx.fill();
-    // tail
-    ctx.fillStyle = '#2f3a55';
+    ctx.fillStyle = s.birdBody;
     ctx.beginPath();
     ctx.moveTo(x + w - 6, y + h/2);
     ctx.lineTo(x + w + 6, y + h/2 - 4);
@@ -592,27 +1036,56 @@
   }
 
   function render() {
-    // Sky gradient is from CSS, but we still need to clear
     ctx.clearRect(0, 0, W, H);
 
-    // Sky gradient overlay (so canvas snapshot looks right)
-    const sky = ctx.createLinearGradient(0, 0, 0, groundY());
-    sky.addColorStop(0, '#9be7ff');
-    sky.addColorStop(1, '#fdf3c8');
-    ctx.fillStyle = sky;
-    ctx.fillRect(0, 0, W, groundY());
+    // Apply screen shake (transformed for the rest of the frame)
+    let shakeX = 0, shakeY = 0;
+    if (shakeAmp > 0.1) {
+      shakeX = (Math.random() - 0.5) * shakeAmp * 2;
+      shakeY = (Math.random() - 0.5) * shakeAmp * 2;
+    }
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
 
-    // Sun
-    ctx.fillStyle = 'rgba(255, 230, 140, 0.9)';
+    // Sky gradient (stage palette, crossfaded)
+    const sky = ctx.createLinearGradient(0, 0, 0, groundY());
+    sky.addColorStop(0, pal('skyTop'));
+    sky.addColorStop(1, pal('skyBottom'));
+    ctx.fillStyle = sky;
+    ctx.fillRect(-20, -20, W + 40, groundY() + 20);
+
+    // Stars (night) — draw before sun/moon so they sit behind it
+    const nightWeight = (STAGES[currentStage].isNight ? stageBlend : 0)
+                      + (STAGES[prevStage].isNight ? (1 - stageBlend) : 0);
+    if (nightWeight > 0.02) {
+      for (const s of starField) {
+        ctx.fillStyle = `rgba(255,255,255,${s.a * nightWeight})`;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Sun / moon
+    ctx.fillStyle = pal('sun');
     ctx.beginPath();
     ctx.arc(W - 90, 90, 38, 0, Math.PI * 2);
     ctx.fill();
+    if (nightWeight > 0.5) {
+      // small craters on the moon
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      ctx.beginPath(); ctx.arc(W - 100, 84, 5, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(W - 78, 100, 4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(W - 92, 104, 3, 0, Math.PI*2); ctx.fill();
+    }
 
-    // Clouds
-    for (const c of clouds) drawCloud(c);
+    // Clouds (skip in night for atmosphere)
+    if (nightWeight < 0.6) {
+      for (const c of clouds) drawCloud(c);
+    }
 
-    // Distant hills
-    ctx.fillStyle = '#7ec06d';
+    // Distant hills (palette-aware)
+    ctx.fillStyle = pal('hill');
     const hillBase = groundY();
     ctx.beginPath();
     ctx.moveTo(0, hillBase);
@@ -635,6 +1108,8 @@
     for (const b of balls) drawBall(b);
     drawParticles();
     drawSnacks();
+
+    ctx.restore();
   }
 
   function loop(now) {
@@ -652,6 +1127,7 @@
   for (let i = 0; i < 5; i++) {
     clouds.push({ x: Math.random() * W, y: 40 + Math.random() * (H * 0.35), s: 0.4 + Math.random() * 0.6 });
   }
+  if (bestScore > 0) bestLineEl.textContent = `Best: ${bestScore}`;
   updateHUD();
   requestAnimationFrame(loop);
 })();
